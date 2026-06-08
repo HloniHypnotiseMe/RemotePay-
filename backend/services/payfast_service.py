@@ -4,21 +4,31 @@ from core.config import settings
 
 def generate_payfast_signature(data: dict) -> str:
     """Generate MD5 signature for PayFast"""
-    # Remove empty values
-    filtered = {k: str(v) for k, v in data.items() if v and k != 'signature'}
+    # Remove empty values and signature field
+    filtered = {}
+    for k, v in data.items():
+        if v and k != 'signature':
+            filtered[k] = str(v)
     
     # Sort keys alphabetically
-    sorted_items = sorted(filtered.items())
+    sorted_keys = sorted(filtered.keys())
     
     # Create query string
-    query_string = '&'.join([f"{k}={v}" for k, v in sorted_items])
+    pairs = []
+    for key in sorted_keys:
+        # URL encode the value
+        encoded_value = urllib.parse.quote_plus(str(filtered[key]))
+        pairs.append(f"{key}={encoded_value}")
+    
+    query_string = '&'.join(pairs)
     
     # Add passphrase if set
     if settings.PAYFAST_PASSPHRASE:
         query_string += f'&passphrase={settings.PAYFAST_PASSPHRASE}'
     
     # Generate MD5 hash
-    return hashlib.md5(query_string.encode()).hexdigest()
+    signature = hashlib.md5(query_string.encode()).hexdigest()
+    return signature
 
 def create_payfast_payment(
     transaction_id: str,
@@ -39,13 +49,13 @@ def create_payfast_payment(
     else:
         checkout_url = "https://www.payfast.co.za/eng/process"
     
-    # Prepare form data
+    # Prepare form data - order matters for signature
     form_data = {
         "merchant_id": settings.PAYFAST_MERCHANT_ID,
         "merchant_key": settings.PAYFAST_MERCHANT_KEY,
         "return_url": return_url,
         "cancel_url": cancel_url,
-        "notify_url": f"https://api.remote-pay.co.za/webhooks/payfast",
+        "notify_url": "https://api.remote-pay.co.za/webhooks/payfast",
         "m_payment_id": transaction_id,
         "amount": f"{amount_rand:.2f}",
         "item_name": item_name,
@@ -65,5 +75,7 @@ def create_payfast_payment(
 def verify_payfast_signature(data: dict) -> bool:
     """Verify incoming webhook signature"""
     received_signature = data.get("signature", "")
-    calculated_signature = generate_payfast_signature(data)
+    # Remove signature before calculating
+    data_copy = {k: v for k, v in data.items() if k != 'signature'}
+    calculated_signature = generate_payfast_signature(data_copy)
     return received_signature == calculated_signature

@@ -58,7 +58,7 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        amount: 10000,
+        amount: 1000,
         currency: 'ZAR',
         customer_id: customer.id,
         return_url: 'https://www.remote-pay.co.za/success',

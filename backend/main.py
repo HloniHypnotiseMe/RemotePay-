@@ -6,16 +6,16 @@ import uuid
 from datetime import datetime
 
 from core.config import settings
-from api import payments, customers, assistant
+from api import payments, customers, assistant, admin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print(f"🚀 {settings.PROJECT_NAME} v{settings.VERSION} starting...")
-    print(f"💰 PayFast Mode: {'SANDBOX' if settings.PAYFAST_SANDBOX else 'PRODUCTION'}")
+    print(f"Starting {settings.PROJECT_NAME} v{settings.VERSION}...")
+    print(f"PayFast Mode: {'SANDBOX' if settings.PAYFAST_SANDBOX else 'PRODUCTION'}")
     yield
     # Shutdown
-    print("👋 Shutting down...")
+    print("Shutting down...")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -46,6 +46,7 @@ async def health():
 # Include routers
 app.include_router(customers.router, prefix=settings.API_V1_PREFIX, tags=["Customers"])
 app.include_router(payments.router, prefix=settings.API_V1_PREFIX, tags=["Payments"])
+app.include_router(admin.router, prefix=settings.API_V1_PREFIX, tags=["Admin"])
 app.include_router(assistant.router, prefix=settings.API_V1_PREFIX, tags=["Assistant"])
 
 # Webhook endpoint
@@ -65,7 +66,7 @@ async def payfast_webhook(request: Request):
     payment_status = data.get("payment_status")
     
     # Update transaction status (in production, update database)
-    print(f"📝 Webhook received: {transaction_id} -> {payment_status}")
+    print(f"Webhook received: {transaction_id} -> {payment_status}")
     
     return {"status": "ok"}
 

@@ -66,6 +66,22 @@ async def create_payment(payment: PaymentCreate):
         status="pending"
     )
 
+
+
+@router.get("/transactions/customer/{customer_id}")
+async def get_customer_transactions(customer_id: str, limit: int = 50):
+    """Get transaction history for a specific customer"""
+    customer_transactions = [
+        t for t in transactions_db.values() 
+        if t.get("customer_id") == customer_id
+    ]
+    customer_transactions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return {
+        "customer_id": customer_id,
+        "total_transactions": len(customer_transactions),
+        "transactions": customer_transactions[:limit]
+    }
+
 @router.get("/payments/{transaction_id}")
 async def get_payment(transaction_id: str):
     if transaction_id not in transactions_db:
