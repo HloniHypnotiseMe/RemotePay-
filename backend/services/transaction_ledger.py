@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 
 from core.config import settings
 from models.transaction_ledger import TransactionLedgerEntry
@@ -10,7 +12,7 @@ class TransactionLedger:
     """Append/update canonical RemotePay transaction records in MongoDB.
 
     The ledger is deliberately independent of the payment provider. Provider
-    adapters should normalize their results before writing to this service.
+    adapters normalize provider results before writing to this service.
     """
 
     def __init__(self, database_url: Optional[str] = None):
@@ -45,4 +47,28 @@ class TransactionLedger:
 
     async def get_by_idempotency_key(self, idempotency_key: str) -> Optional[TransactionLedgerEntry]:
         document = await self._collection.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
+        return TransactionLedgerEntry(**document) if document else None
+
+    async def update_status(
+        self,
+        payment_id: str,
+        status: str,
+        *,
+        provider_reference: Optional[str] = None,
+    ) -> Optional[TransactionLedgerEntry]:
+        now = datetime.now(timezone.utc)
+        updates = {"status": status, "updated_at": now}
+        if provider_reference:
+            updates["provider_reference"] = provider_reference
+        if status == "paid":
+            updates["paid_at"] = now
+        if status == "settled":
+            updates["settled_at"] = now
+
+        document = await self._collection.find_one_and_update(
+            {"payment_id": payment_id},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+            projection={"_id": 0},
+        )
         return TransactionLedgerEntry(**document) if document else None
