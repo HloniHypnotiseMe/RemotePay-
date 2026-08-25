@@ -1,13 +1,17 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import settings
+from models.transaction_ledger import TransactionLedgerEntry
 from services.simplyblu_provider import SimplyBluProvider
+from services.transaction_ledger import TransactionLedger
 
 router = APIRouter()
+ledger = TransactionLedger()
+ledger_ready = False
 
 
 class PaymentLinkCreate(BaseModel):
@@ -23,7 +27,7 @@ class PaymentLinkCreate(BaseModel):
     return_url: Optional[str] = None
     cancel_url: Optional[str] = None
     idempotency_key: str = Field(min_length=1)
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PaymentLinkResponse(BaseModel):
@@ -37,16 +41,39 @@ class PaymentLinkResponse(BaseModel):
     brand_id: str
 
 
-# Temporary API boundary store. Persistent ledger integration is the next layer.
-payment_links: Dict[str, dict] = {}
-idempotency_index: Dict[str, str] = {}
+async def _ensure_ledger() -> None:
+    global ledger_ready
+    if ledger_ready:
+        return
+    if not settings.DATABASE_URL:
+        raise HTTPException(status_code=503, detail="RemotePay transaction ledger is not configured")
+    await ledger.ensure_indexes()
+    ledger_ready = True
+
+
+def _response(entry: TransactionLedgerEntry) -> PaymentLinkResponse:
+    payment_url = str(entry.provider_metadata.get("checkout_url") or "")
+    if not payment_url:
+        raise HTTPException(status_code=502, detail="Stored payment record has no hosted payment URL")
+    return PaymentLinkResponse(
+        payment_id=entry.payment_id,
+        transaction_id=entry.transaction_id,
+        status=entry.status,
+        payment_url=payment_url,
+        currency=entry.currency,
+        amount_minor=entry.amount_minor,
+        merchant_id=entry.merchant_id,
+        brand_id=entry.brand_id,
+    )
 
 
 @router.post("/payment-links", response_model=PaymentLinkResponse, status_code=201)
 async def create_payment_link(payment: PaymentLinkCreate):
-    existing_id = idempotency_index.get(payment.idempotency_key)
-    if existing_id:
-        return PaymentLinkResponse(**payment_links[existing_id])
+    await _ensure_ledger()
+
+    existing = await ledger.get_by_idempotency_key(payment.idempotency_key)
+    if existing:
+        return _response(existing)
 
     payment_id = f"pay_{uuid4().hex[:16]}"
     transaction_id = f"txn_{uuid4().hex[:16]}"
@@ -67,32 +94,43 @@ async def create_payment_link(payment: PaymentLinkCreate):
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Underlying payment provider checkout failed") from exc
 
-    record = {
-        "payment_id": payment_id,
-        "transaction_id": transaction_id,
-        "status": "pending",
-        "payment_url": checkout.checkout_url,
-        "currency": payment.currency.upper(),
-        "amount_minor": payment.amount_minor,
-        "merchant_id": payment.merchant_id,
-        "brand_id": payment.brand_id,
-        "provider": checkout.provider,
-        "provider_payment_id": checkout.provider_payment_id,
-        "product_id": payment.product_id,
-        "offer_id": payment.offer_id,
-        "customer_reference": payment.customer_reference,
-        "source_system": payment.source_system,
-        "metadata": payment.metadata,
-    }
+    entry = TransactionLedgerEntry(
+        payment_id=payment_id,
+        transaction_id=transaction_id,
+        merchant_id=payment.merchant_id,
+        brand_id=payment.brand_id,
+        source_system=payment.source_system,
+        customer_reference=payment.customer_reference,
+        product_id=payment.product_id,
+        offer_id=payment.offer_id,
+        description=payment.description,
+        amount_minor=payment.amount_minor,
+        currency=payment.currency.upper(),
+        status="pending",
+        provider_reference=checkout.provider_payment_id,
+        provider_metadata={
+            "provider": checkout.provider,
+            "checkout_url": checkout.checkout_url,
+            "raw": checkout.raw,
+        },
+        idempotency_key=payment.idempotency_key,
+        metadata={"return_url": payment.return_url, "cancel_url": payment.cancel_url, **payment.metadata},
+    )
 
-    payment_links[payment_id] = record
-    idempotency_index[payment.idempotency_key] = payment_id
-    return PaymentLinkResponse(**record)
+    try:
+        await ledger.create(entry)
+    except Exception as exc:
+        # A provider checkout exists but cannot be safely persisted. Do not hand
+        # the caller a payment URL that RemotePay cannot account for.
+        raise HTTPException(status_code=503, detail="Payment created at provider but could not be persisted by RemotePay") from exc
+
+    return _response(entry)
 
 
 @router.get("/payment-links/{payment_id}", response_model=PaymentLinkResponse)
 async def get_payment_link(payment_id: str):
-    record = payment_links.get(payment_id)
-    if record is None:
+    await _ensure_ledger()
+    entry = await ledger.get_by_payment_id(payment_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="Payment link not found")
-    return PaymentLinkResponse(**record)
+    return _response(entry)
