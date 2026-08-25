@@ -1,12 +1,24 @@
 from fastapi.testclient import TestClient
 
 from main import app
+from services.simplyblu_provider import ProviderCheckout, SimplyBluProvider
 
 
 client = TestClient(app)
 
 
-def test_payment_link_creation_and_idempotency():
+def fake_checkout(self, *, amount_minor, currency, reference, description, return_url=None):
+    return ProviderCheckout(
+        provider="simplyblu",
+        provider_payment_id="sb_test_1",
+        checkout_url="https://sandbox.example.test/pay/sb_test_1",
+        raw={"amount": amount_minor, "currency": currency},
+    )
+
+
+def test_payment_link_creation_and_idempotency(monkeypatch):
+    monkeypatch.setattr(SimplyBluProvider, "create_payment", fake_checkout)
+
     payload = {
         "merchant_id": "merchant_test",
         "brand_id": "ubernie",
@@ -20,6 +32,7 @@ def test_payment_link_creation_and_idempotency():
     first = client.post("/api/v1/payment-links", json=payload)
     assert first.status_code == 201
     first_body = first.json()
+    assert first_body["payment_url"].startswith("https://")
 
     second = client.post("/api/v1/payment-links", json=payload)
     assert second.status_code == 201
