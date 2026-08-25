@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 
 from core.config import settings
 from models.transaction_ledger import TransactionLedgerEntry
@@ -65,6 +66,6 @@ class TransactionLedger:
             {"payment_id": event.payment_id, "transaction_id": event.transaction_id},
             {"$set": update},
             projection={"_id": 0},
-            return_document=True,
+            return_document=ReturnDocument.AFTER,
         )
         return TransactionLedgerEntry(**document) if document else None
