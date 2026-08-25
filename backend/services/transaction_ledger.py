@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -45,4 +46,25 @@ class TransactionLedger:
 
     async def get_by_idempotency_key(self, idempotency_key: str) -> Optional[TransactionLedgerEntry]:
         document = await self._collection.find_one({"idempotency_key": idempotency_key}, {"_id": 0})
+        return TransactionLedgerEntry(**document) if document else None
+
+    async def apply_provider_event(self, event) -> Optional[TransactionLedgerEntry]:
+        """Reconcile one normalized provider event into the canonical ledger."""
+        now = datetime.now(timezone.utc)
+        update = {"status": event.status, "updated_at": now}
+        if event.provider_reference:
+            update["provider_reference"] = event.provider_reference
+        if event.status == "paid":
+            update["paid_at"] = now
+        if event.status == "refunded":
+            update["metadata.provider_refund_event_id"] = event.event_id
+        if event.metadata:
+            update["metadata.provider_event"] = event.metadata
+
+        document = await self._collection.find_one_and_update(
+            {"payment_id": event.payment_id, "transaction_id": event.transaction_id},
+            {"$set": update},
+            projection={"_id": 0},
+            return_document=True,
+        )
         return TransactionLedgerEntry(**document) if document else None
